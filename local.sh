@@ -1,7 +1,7 @@
 #!/bin/bash
 
 function TIME() {
-  case $1 in
+  case "$1" in
     r) local Color="\033[0;31m";;
     g) local Color="\033[0;32m";;
     y) local Color="\033[0;33m";;
@@ -10,7 +10,7 @@ function TIME() {
     l) local Color="\033[0;36m";;
     *) local Color="\033[0;0m";;
   esac
-echo -e "\n$Color$2\033[0m"
+echo -e "\n${Color}${2}\033[0m"
 }
 
 source /etc/os-release
@@ -144,8 +144,8 @@ export SETT_TINGS="$OPERATES_PATH/$FOLDER_NAME/settings.ini"
 if [[ -f "${SETT_TINGS}" ]] && [[ "${NUM_BER}" == "1" ]]; then
   source ${SETT_TINGS}
 else
-  PACKAGING_FIRMWARE="$(grep '^PACKAGING_FIRMWARE=' "${SETT_TINGS}" | awk -F'"' '{print $2}')"
-  MODIFY_CONFIGURATION="$(grep '^MODIFY_CONFIGURATION=' "${SETT_TINGS}" | awk -F'"' '{print $2}')"
+  [[ -d "${OPERATES_PATH}" ]] && PACKAGING_FIRMWARE="$(grep '^PACKAGING_FIRMWARE=' "${SETT_TINGS}" | awk -F'"' '{print $2}')"
+  [[ -d "${OPERATES_PATH}" ]] && MODIFY_CONFIGURATION="$(grep '^MODIFY_CONFIGURATION=' "${SETT_TINGS}" | awk -F'"' '{print $2}')"
 fi
 export COMPILE_PATH="$OPERATES_PATH/$FOLDER_NAME"
 export SOURCE_CODE="${SOURCE_CODE}"
@@ -157,19 +157,21 @@ export BUILD_PARTSH="${COMPILE_PATH}/diy-part.sh"
 export BUILD_SETTINGS="${COMPILE_PATH}/settings.ini"
 export CONFIG_FILE="${CONFIG_FILE}"
 export MYCONFIG_FILE="${COMPILE_PATH}/seed/${CONFIG_FILE}"
-TIME y "正在执行：判断文件是否缺失"
-curl -fsSL https://github.com/281677160/common/raw/main/custom/first.sh -o /tmp/first.sh
-if grep -q "TIME" "/tmp/first.sh"; then
-  chmod +x /tmp/first.sh && source /tmp/first.sh
+
+LINSHI_COMMON="/tmp/common"
+[[ ! -d "${OPERATES_PATH}" ]] && TIME r "缺少编译主文件,正在下载中..." || TIME y "正在执行：判断文件是否缺失"
+[[ -d "${LINSHI_COMMON}" ]] && rm -rf "${LINSHI_COMMON}"
+if ! git clone -q --single-branch --depth=1 --branch=main https://github.com/281677160/common "${LINSHI_COMMON}"; then
+  git clone --depth=1 https://github.com/281677160/common "${LINSHI_COMMON}"
+fi
+if [ -f "${LINSHI_COMMON}/custom/first.sh" ] && grep -qE "bash" "${LINSHI_COMMON}/custom/first.sh"; then
+  chmod -R +x "${LINSHI_COMMON}"
+  source "${LINSHI_COMMON}/custom/first.sh"
 else
-  TIME r "文件下载失败,请检查网络"
+  [[ ! -d "${OPERATES_PATH}" ]] && TIME r "文件下载失败,请检查网络再试" || TIME r "对比版本号文件下载失败，请检查网络再试"
   exit 1
 fi
-if [[ "${TONGBU_YUANMA}" == "1" ]] && [[ -z "${SUCCESS_FAILED}" ]]; then
-  exit 0
-else
-  source $COMMON_SH && Diy_variable
-fi
+source $COMMON_SH && Diy_menu6
 }
 
 function Ben_config() {
@@ -201,6 +203,7 @@ if [[ "${NUM_BER}" == "1" ]]; then
     rm -rf openwrt
     cp -Rf $tmpdir $HOME_PATH
     rm -rf $tmpdir
+    source $COMMON_SH && Diy_feedsconf
     TIME g "源码下载完成"
   else
     TIME r "源码下载失败,请检测网络"
@@ -230,15 +233,9 @@ elif [[ "${NUM_BER}" == "2" ]]; then
 elif [[ "${NUM_BER}" == "3" ]]; then
   cd $HOME_PATH
   TIME y "正在执行：更新和安装feeds"
-  ./scripts/feeds update -a > /dev/null 2>&1
+  ./scripts/feeds update -a
   ./scripts/feeds install -a
 fi
-}
-
-function Ben_diyptsh() {
-#加载自定义文件"
-cd ${HOME_PATH}
-source $COMMON_SH && Diy_partsh
 }
 
 function Ben_configuration() {
@@ -273,18 +270,18 @@ function Ben_configuration() {
 }
 
 function Ben_download() {
-    local max_retries=3 retry=0
+    local max_retries=4 retry=0
     cd "${HOME_PATH}" || { TIME r "目录切换失败"; exit 1; }
 
     while (( retry++ < max_retries )); do
-        TIME y "第${retry}次尝试下载DL文件..."
+        [[ "${retry}" == "1" ]] && TIME y "正在执行：下载DL文件..." || TIME y "第${retry}次尝试下载DL文件..."
         rm -f /tmp/build.log
         make -j8 download 2>&1 | tee /tmp/build.log
         local make_status=${PIPESTATUS[0]}
 
         # 双重验证机制
         if [[ ${make_status} -eq 0 ]] && ! grep -qE 'ERROR|Failed' /tmp/build.log; then
-            TIME g "下载验证通过"
+            TIME g "DL文件下载完成"
             return 0
         fi
 
@@ -299,6 +296,22 @@ function Ben_download() {
 
     TIME r "已达最大重试次数"
     exit 1
+}
+
+function Ben_buildzuini() {
+cat >"${LICENSES_DOC}/buildzu.ini" <<-EOF
+SUCCESS_FAILED="${SUCCESS_FAILED}"
+SOURCE_CODE="${SOURCE_CODE}"
+SOURCE="${SOURCE}"
+FOLDER_NAME="${FOLDER_NAME}"
+REPO_BRANCH="${REPO_BRANCH}"
+REPO_URL="${REPO_URL}"
+LUCI_EDITION="${LUCI_EDITION}"
+TARGET_BOARD="${TARGET_BOARD}"
+MYCONFIG_FILE="${MYCONFIG_FILE}"
+TARGET_PROFILE="${TARGET_PROFILE}"
+CONFIG_FILE="${CONFIG_FILE}"
+EOF
 }
 
 function Ben_compile() {
@@ -329,40 +342,16 @@ sleep 5
 # 开始编译固件
 make -j${cpunproc} || make -j1 V=s 2>&1 | tee $op_log
 
-# 检测编译结果
-if [[ -f "${op_log}" ]] && [[ -n "$(cat "${op_log}" |grep -i 'Error 2')" ]]; then
-  echo "
+# 检查编译结果grep -io 'Error 2' "${op_log}"
+if [[ -f "${op_log}" ]] && [[ -n "$(grep -io 'Error 2' "${op_log}")" ]]; then
   SUCCESS_FAILED="breakdown"
-  SOURCE_CODE="${SOURCE_CODE}"
-  SOURCE="${SOURCE}"
-  FOLDER_NAME="${FOLDER_NAME}"
-  REPO_BRANCH="${REPO_BRANCH}"
-  REPO_URL="${REPO_URL}"
-  LUCI_EDITION="${LUCI_EDITION}"
-  TARGET_BOARD="${TARGET_BOARD}"
-  MYCONFIG_FILE="${MYCONFIG_FILE}"
-  TARGET_PROFILE="${TARGET_PROFILE}"
-  CONFIG_FILE="${CONFIG_FILE}"
-  " > ${LICENSES_DOC}/buildzu.ini
-  sed -i 's/^[ ]*//g' ${LICENSES_DOC}/buildzu.ini
+  Ben_buildzuini
   TIME r "编译失败~~!"
   TIME y "在[operates/build.log]可查看编译日志"
   exit 1
 else
-  echo "
   SUCCESS_FAILED="success"
-  SOURCE_CODE="${SOURCE_CODE}"
-  SOURCE="${SOURCE}"
-  FOLDER_NAME="${FOLDER_NAME}"
-  REPO_BRANCH="${REPO_BRANCH}"
-  REPO_URL="${REPO_URL}"
-  LUCI_EDITION="${LUCI_EDITION}"
-  TARGET_BOARD="${TARGET_BOARD}"
-  MYCONFIG_FILE="${MYCONFIG_FILE}"
-  TARGET_PROFILE="${TARGET_PROFILE}"
-  CONFIG_FILE="${CONFIG_FILE}"
-  " > ${LICENSES_DOC}/buildzu.ini
-  sed -i 's/^[ ]*//g' ${LICENSES_DOC}/buildzu.ini
+  Ben_buildzuini
 fi
 }
 
@@ -371,7 +360,7 @@ cd ${FIRMWARE_PATH}
 # 整理固件
 cp -Rf config.buildinfo ${MYCONFIG_FILE}
 if [[ -n "$(ls -1 |grep -E 'immortalwrt')" ]]; then
-  rename -v "s/^immortalwrt/openwrt/" * > /dev/null 2>&1
+  rename "s/^immortalwrt/openwrt/" *
   sed -i 's/immortalwrt/openwrt/g' `egrep "immortalwrt" -rl ./`
 fi
 
@@ -379,7 +368,7 @@ for X in $(cat ${CLEAR_PATH} |sed "s/.*${TARGET_BOARD}//g"); do
   rm -rf *"$X"*
 done
 
-if [[ -n "$(ls -1 |grep -E 'armvirt')" ]] || [[ -n "$(ls -1 |grep -E 'armsr')" ]]; then
+if echo "$TARGET_BOARD" | grep -Eq 'armvirt|armsr'; then
   [[ ! -d "$GITHUB_WORKSPACE/amlogic" ]] && mkdir -p $GITHUB_WORKSPACE/amlogic
   rm -rf $GITHUB_WORKSPACE/amlogic/${SOURCE}-armvirt-64-default-rootfs.tar.gz
   cp -Rf *rootfs.tar.gz $GITHUB_WORKSPACE/amlogic/${SOURCE}-armvirt-64-default-rootfs.tar.gz
@@ -414,15 +403,10 @@ TIME r "提示：再次输入编译命令可进行二次编译"
 
 function Ben_zidongdabao() {
 cd ${HOME_PATH}
-ZIDONG_DABAO="/tmp/zidong.sh"
 DIY_PT1_DABAO="${OPERATES_PATH}/${FOLDER_NAME}/diy-part.sh"
-echo '#!/bin/bash' > ${ZIDONG_DABAO}
-grep -E '.*export amlogic.*=".*"' $DIY_PT1_DABAO >> ${ZIDONG_DABAO}
-grep -E '.*export auto.*=".*"' $DIY_PT1_DABAO >> ${ZIDONG_DABAO}
-grep -E '.*export rootfs.*=".*"' $DIY_PT1_DABAO >> ${ZIDONG_DABAO}
-grep -E '.*export kernel.*=".*"' $DIY_PT1_DABAO >> ${ZIDONG_DABAO}
-chmod +x ${ZIDONG_DABAO}
-source ${ZIDONG_DABAO}
+echo '#!/bin/bash' > "/tmp/zidong.sh"
+grep -E '.*export.*=".*"' "$DIY_PT1_DABAO" >> "/tmp/zidong.sh"
+chmod +x "/tmp/zidong.sh" && source "/tmp/zidong.sh"
 TIME g "执行自动打包任务"
 sleep 2
 Ben_packaging2
@@ -839,7 +823,7 @@ source $COMMON_SH && Diy_menu
 
 function Ben_menu2() {
 cd $HOME_PATH
-Ben_diyptsh
+source $COMMON_SH && Diy_menu2
 }
 
 function Ben_menu3() {
@@ -992,10 +976,10 @@ function menu2() {
   clear
   echo
   if [[ "${SUCCESS_FAILED}" == "success" ]]; then
-    TIME g " 上回使用${SOURCE}-${LUCI_EDITION}源码${Font}${Blue}成功编译${TARGET_PROFILE}固件"
+    TIME l " 提示：上回使用${SOURCE}-${LUCI_EDITION}源码${Font}${Blue}成功编译${TARGET_PROFILE}固件"
   else
-    TIME r " 上回使用${SOURCE}-${LUCI_EDITION}源码${Font}${Blue}编译${TARGET_PROFILE}固件失败"
-    TIME g " 需要注意的是,有些情况下编译失败,还保留缓存继续编译的话,会一直编译失败的"
+    TIME r " 提示：上回使用${SOURCE}-${LUCI_EDITION}源码${Font}${Blue}编译${TARGET_PROFILE}固件失败"
+    TIME l " 提示：需要注意的是,有些情况下编译失败,还保留缓存继续编译的话,会一直编译失败的"
   fi
   if [[ "${ARMVIRT_TARGZ}" == "armvirt" ]]; then
     mydabao="除了读取打包设置,"
@@ -1060,16 +1044,16 @@ function menu3() {
   echo 
   echo
   cd ${OPERATES_PATH}
-  XYZDSZ="$(ls -d */ | grep -v 'common\|backups' |cut -d"/" -f1 |awk '$0=NR" "$0'| awk 'END {print}' |awk '{print $(1)}')"
   ls -d */ | grep -v 'common\|backups' |cut -d"/" -f1 > /tmp/GITHUB_EVN
-  ls -d */ | grep -v 'common\|backups' |cut -d"/" -f1 |awk '$0=NR"、"$0'|awk '{print "  " $0}'
+  XYZDSZ="$(cat '/tmp/GITHUB_EVN' |awk '$0=NR" "$0'| awk 'END {print}' |awk '{print $(1)}')"
+  cat '/tmp/GITHUB_EVN' |awk '$0=NR"、"$0'|awk '{print "  " $0}'
   cd ${GITHUB_WORKSPACE}
-  YMXZQ="QpyZm"
+  YMXZQ="RpyZm"
   if [[ "${SUCCESS_FAILED}" =~ (success|breakdown) ]]; then
       hx=",输入[Q/q]返回上一步"
       YMXZQ="Q|q"
   fi
-  TIME y "请输入您要编译源码前面对应的数值(1~X)${hx}，输入[N/n]则为退出程序"
+  TIME y "请输入您要编译源码前面对应的数值(1~${XYZDSZ})${hx}，输入[N/n]则为退出程序"
   while :; do
     read -p "请输入您的选择：" YMXZ
     if [[ "${YMXZ}" =~ ^[Nn]$ ]]; then
@@ -1104,12 +1088,7 @@ if [[ -f "${LICENSES_DOC}/buildzu.ini" ]]; then
   source ${LICENSES_DOC}/buildzu.ini
 fi
 if [[ ! -d "${OPERATES_PATH}" ]]; then
-  TIME y "缺少编译主文件"
-  curl -fsSL https://github.com/281677160/common/raw/main/custom/first.sh -o /tmp/first.sh
-  chmod +x /tmp/first.sh && source /tmp/first.sh
-  if [[ -z "${SUCCESS_FAILED}" ]]; then
-    exit 0
-  fi
+  Ben_variable
 fi
 if [[ -n "${SUCCESS_FAILED}" ]]; then
   required_dirs=("config" "include" "package" "scripts" "target" "toolchain" "tools" "build_dir")
